@@ -330,7 +330,38 @@
     });
 
     async function startCamera(){
-      const constraints = { video:{ facingMode:'user', width:{ideal:1280}, height:{ideal:720} }, audio:false };
+      const constraints = { video:{ facingMode:{ideal:'user'}, width:{ideal:1280}, height:{ideal:720} }, audio:false };
+      try{
+        let stream;
+        if(navigator.mediaDevices && navigator.mediaDevices.getUserMedia){
+          stream = await navigator.mediaDevices.getUserMedia(constraints);
+        } else if(navigator.getUserMedia){
+          stream = await new Promise((res,rej)=>navigator.getUserMedia(constraints, res, rej));
+        } else if(navigator.webkitGetUserMedia){
+          stream = await new Promise((res,rej)=>navigator.webkitGetUserMedia(constraints, res, rej));
+        } else if(navigator.mozGetUserMedia){
+          stream = await new Promise((res,rej)=>navigator.mozGetUserMedia(constraints, res, rej));
+        } else {
+          throw new Error('getUserMedia не поддерживается');
+        }
+        streamRef = stream;
+        video.srcObject = stream;
+        try { await video.play(); } catch(_) { setTimeout(()=>video.play().catch(()=>{}), 50); }
+        setStatus('Камера активна'); setDot('#7cf7d4');
+        perm.hidden = true;
+        const cam = new Camera(video, { onFrame: async () => { await hands.send({ image: video }); }, width:1280, height:720 });
+        cam.start();
+      } catch(err){
+        console.error('getUserMedia error:', err);
+        setStatus('Нет доступа к камере: ' + (err.name||err.message));
+        perm.hidden = false;
+        let msg = 'Браузер не дал доступ ('+(err.name||err.message)+'). ';
+        if(location.hostname.endsWith('github.com')) msg += 'Открыт просмотр файла на github.com — он блокирует камеру. Включи GitHub Pages.';
+        msg += ' Если запретил ранее — открой настройки сайта и разреши камеру. Если файл открыт как file:// — запусти по HTTPS или на localhost.';
+        permText.textContent = msg;
+        setDot('var(--danger)');
+      }
+    }, height:{ideal:720} }, audio:false };
       try{
         // Safari: getUserMedia must be inside a user gesture; the button click triggers this.
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
@@ -355,8 +386,31 @@
     }
 
     async function preflight(){
-      const secureOK = window.isSecureContext || location.hostname === 'localhost';
+      // 0) If host blocks camera by Permissions-Policy (e.g., github.com file viewer) — fail fast
+      try{
+        const pp = document.permissionsPolicy || document.featurePolicy;
+        if(pp && typeof pp.allowsFeature === 'function'){
+          if(!pp.allowsFeature('camera')){
+            perm.hidden = false;
+            permText.textContent = 'Этот хост запрещает камеру заголовком Permissions-Policy (например, github.com просмотр файла). Опубликуй через GitHub Pages или открой локально по HTTPS.';
+            return;
+          }
+        }
+      }catch(_){/* ignore */}
+
+      const secureOK = (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1');
       if(!secureOK){ perm.hidden = false; permText.textContent = 'Нужен HTTPS или localhost. Иначе браузер не даст доступ к камере.'; return; }
+      if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ perm.hidden = false; permText.textContent = 'Браузер не поддерживает camera API. Открой в актуальном Safari/Chrome/Firefox.'; return; }
+      // Best-effort auto-start if permission already granted (Safari обычно не поддерживает Permissions API)
+      try{
+        if(navigator.permissions && navigator.permissions.query){
+          const st = await navigator.permissions.query({ name: 'camera' });
+          if(st.state === 'granted'){ startCamera(); return; }
+          if(st.state === 'denied'){ perm.hidden=false; permText.textContent = 'Доступ к камере ранее запрещён. Открой настройки сайта и разреши камеру.'; return; }
+        }
+      } catch(_){/* Safari may throw — ignore */}
+      perm.hidden = false; permText.textContent = 'Нажми «Включить камеру» и выбери «Разрешить».';
+    }
       if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){ perm.hidden = false; permText.textContent = 'Браузер не поддерживает camera API. Открой в актуальном Safari/Chrome/Firefox.'; return; }
       // Best-effort auto-start if permission already granted (not supported in Safari — тихо игнорируем)
       try{
@@ -369,9 +423,17 @@
       perm.hidden = false; permText.textContent = 'Нажми «Включить камеру» и выбери «Разрешить».';
     }
 
-    permBtn?.addEventListener('click', startCamera, { passive:true });
+    let started = false;
+    function onceStart(){ if(started) return; started = true; startCamera(); }
+    permBtn?.addEventListener('click', onceStart, { passive:true });
+    // Дополнительно: на первый тап по сцене тоже просим доступ (некоторые браузеры странно обрабатывают кнопки)
+    stage.addEventListener('pointerdown', onceStart, { passive:true });
     permHow?.addEventListener('click', ()=>{
-      alert('Как разрешить камеру:\n\n— iOS Safari: Настройки → Safari → Камера → Разрешить для сайтов. В самом сайте: AА → Настройки сайта → Камера → Разрешить.\n— macOS Safari: Адресная строка → Значок камеры → Разрешить.\n— Если открыто как file:/// — запусти через HTTPS или localhost.');
+      alert('Как разрешить камеру:
+
+— iOS Safari: Настройки → Safari → Камера → Разрешить для сайтов. В самом сайте: AА → Настройки сайта → Камера → Разрешить.
+— macOS Safari: Адресная строка → Значок камеры → Разрешить.
+— Если открыто как file:/// — запусти через HTTPS или localhost.');
     });
 
     // Keyboard shortcuts
